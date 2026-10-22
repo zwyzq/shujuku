@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}问卷系统{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="app">
+    <a class="brand" href="/">MongoDB 问卷</a>
+    <nav id="nav">
+      <a href="/">我的问卷</a>
+      <a href="/bank">题库</a>
+      <span id="nav-user" class="muted"></span>
+      <a href="#" id="nav-logout" class="hidden">退出</a>
+      <a href="/login" id="nav-login">登录</a>
+    </nav>
+  </header>
+  <div class="wrap">
+    {% block body %}{% endblock %}
+  </div>
+  <script src="/static/app.js"></script>
+  <script>
+    (async () => {
+      const user = await loadMe();
+      const u = document.getElementById("nav-user");
+      const out = document.getElementById("nav-logout");
+      const inn = document.getElementById("nav-login");
+      if (user) {
+        u.textContent = user.username;
+        out.classList.remove("hidden");
+        inn.classList.add("hidden");
+        out.onclick = async (e) => {
+          e.preventDefault();
+          await api("POST", "/api/auth/logout");
+          location.href = "/login";
+        };
+      }
+    })();
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}我的问卷{% endblock %}
+{% block body %}
+<div class="row" style="justify-content:space-between;">
+  <div>
+    <h1>我的问卷</h1>
+    <p class="muted">创建、编辑、发布后把链接发给别人填写。</p>
+  </div>
+  <button class="btn" id="btn-new">新建问卷</button>
+</div>
+<div class="card">
+  <ul class="list" id="list"></ul>
+  <p class="muted" id="empty">加载中…</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async () => {
+  const user = await requireLogin();
+  if (!user) return;
+
+  const list = $("#list");
+  const empty = $("#empty");
+
+  async function refresh() {
+    const data = await api("GET", "/api/surveys/");
+    list.innerHTML = "";
+    if (!data.surveys.length) {
+      empty.textContent = "还没有问卷，点右上角「新建问卷」。";
+      empty.classList.remove("hidden");
+      return;
+    }
+    empty.classList.add("hidden");
+    for (const s of data.surveys) {
+      const li = document.createElement("li");
+      li.innerHTML = `
+        <div>
+          <div><strong>${escapeHtml(s.title)}</strong> ${statusBadge(s.status)}</div>
+          <div class="muted">${s.fill_url ? "填写链接: " + s.fill_url : "未发布"}</div>
+        </div>
+        <div class="row">
+          <a class="btn secondary" href="/surveys/${s.id}">编辑</a>
+          <a class="btn secondary" href="/surveys/${s.id}/stats">统计</a>
+        </div>`;
+      list.appendChild(li);
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+  }
+
+  $("#btn-new").onclick = async () => {
+    const title = prompt("问卷标题", "未命名问卷");
+    if (!title) return;
+    const data = await api("POST", "/api/surveys/", { title, description: "" });
+    location.href = "/surveys/" + data.survey.id;
+  };
+
+  await refresh();
+})();
+</script>
+{% endblock %}

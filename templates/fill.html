@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block title %}填写问卷{% endblock %}
+{% block body %}
+<div class="card">
+  <h1 id="title">加载中…</h1>
+  <p class="muted" id="desc"></p>
+  <p class="muted" id="progress"></p>
+  <div id="qbox"></div>
+  <div class="row" style="margin-top:12px;">
+    <button class="btn secondary hidden" id="btn-prev" type="button">上一题</button>
+    <button class="btn" id="btn-next" type="button">下一题</button>
+    <button class="btn hidden" id="btn-submit" type="button">提交</button>
+  </div>
+  <div class="msg" id="msg"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async () => {
+  const token = location.pathname.split("/").pop();
+  const msg = $("#msg");
+  let questions = [];
+  let answers = {}; // qid -> value
+  let path = [];    // visited question ids in order
+  let idx = 0;
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+  }
+
+  try {
+    const data = await api("GET", `/api/fill/${token}`);
+    $("#title").textContent = data.survey.title;
+    $("#desc").textContent = data.survey.description || "";
+    questions = data.questions.slice().sort((a,b) => a.order - b.order);
+  } catch (e) {
+    $("#title").textContent = "无法打开问卷";
+    if (e.status === 401) {
+      showMsg(msg, "此问卷需要登录后填写，正在跳转登录…", false);
+      setTimeout(() => location.href = "/login", 800);
+      return;
+    }
+    showMsg(msg, e.message, false);
+    $("#btn-next").classList.add("hidden");
+    return;
+  }
+
+  if (!questions.length) {
+    showMsg(msg, "问卷没有题目", false);
+    $("#btn-next").classList.add("hidden");
+    return;
+  }
+
+  path = [questions[0].id];
+
+  function qById(id) { return questions.find(q => q.id === id); }
+  function nextIdAfter(qid) {
+    const i = questions.findIndex(q => q.id === qid);
+    return i >= 0 && i + 1 < questions.length ? questions[i + 1].id : "end";
+  }
+
+  function matchRule(when, ans) {
+    if (Array.isArray(ans)) {
+      if (Array.isArray(when)) return when.every(x => ans.includes(x));
+      return ans.includes(when);
+    }
+    if (when && typeof when === "object" && when.op) {
+      const left = Number(ans), right = Number(when.value);
+      if (Number.isNaN(left) || Number.isNaN(right)) return false;
+      return ({">":left>right,">=":left>=right,"<":left<right,"<=":left<=right,"==":left==right,"!=":left!=right})[when.op];
+    }
+    return ans == when;
+  }
+
+  function resolveNext(q, ans) {
+    for (const r of q.jump_rules || []) {
+      if (matchRule(r.when_value, ans)) {
+        return r.goto_question_id || "end";
+      }
+    }
+    return nextIdAfter(q.id);
+  }
+
+  function readCurrentValue(q) {
+    const box = $("#qbox");
+    if (q.type === "single" || q.type === "rating") {
+      const el = box.querySelector(`input[name="cur"]:checked`);
+      return el ? el.value : null;
+    }
+    if (q.type === "multiple") {
+      return [...box.querySelectorAll(`input[name="cur"]:checked`)].map(x => x.value);
+    }
+    const el = box.querySelector(`[name="cur"]`);
+    if (!el) return null;
+    if (q.type === "number") {
+      if (el.value === "") return null;
+      return q.validation && q.validation.integer ? parseInt(el.value, 10) : Number(el.value);
+    }
+    return el.value;
+  }
+
+  function clientValidate(q, value) {
+    const empty = value === null || value === "" || (Array.isArray(value) && !value.length);
+    if (q.required && empty) return "请完成本题";
+    if (empty) return null;
+    const v = q.validation || {};
+    if (q.type === "multiple") {
+      const n = value.length;
+      if (v.min_select != null && n < v.min_select) return `至少选择 ${v.min_select} 项`;
+      if (v.max_select != null && n > v.max_select) return `最多选择 ${v.max_select} 项`;
+      if (v.exact_select != null && n !== v.exact_select) return `必须选择 ${v.exact_select} 项`;
+    }
+    if (q.type === "text") {
+      if (v.min_length != null && value.length < v.min_length) return `至少 ${v.min_length} 字`;
+      if (v.max_length != null && value.length > v.max_length) return `最多 ${v.max_length} 字`;
+    }
+    if (q.type === "number") {
+      if (Number.isNaN(value)) return "请输入数字";
+      if (v.integer && !Number.isInteger(value)) return "必须是整数";
+      if (v.min != null && value < v.min) return `不能小于 ${v.min}`;
+      if (v.max != null && value > v.max) return `不能大于 ${v.max}`;
+    }
+    return null;
+  }
+
+  function render() {
+    const qid = path[idx];
+    const q = qById(qid);
+    $("#progress").textContent = `第 ${idx + 1} 题（路径中共 ${path.length} 题，提交前还会按跳转裁剪）`;
+    const box = $("#qbox");
+    let inner = `<div class="q-item"><div class="meta">#${q.order}${q.required ? " · 必填" : ""} · ${q.type}</div>
+      <div><strong>${escapeHtml(q.title)}</strong></div>`;
+    const cur = answers[q.id];
+    if (q.type === "single" || q.type === "rating") {
+      inner += `<div class="options">` + q.options.map(o =>
+        `<label><input type="radio" name="cur" value="${escapeHtml(o.value)}" ${cur===o.value?"checked":""}> ${escapeHtml(o.label)}</label>`
+      ).join("") + `</div>`;
+    } else if (q.type === "multiple") {
+      const set = new Set(Array.isArray(cur) ? cur : []);
+      inner += `<div class="options">` + q.options.map(o =>
+        `<label><input type="checkbox" name="cur" value="${escapeHtml(o.value)}" ${set.has(o.value)?"checked":""}> ${escapeHtml(o.label)}</label>`
+      ).join("") + `</div>`;
+    } else if (q.type === "text") {
+      inner += `<textarea name="cur">${cur != null ? escapeHtml(cur) : ""}</textarea>`;
+    } else if (q.type === "number") {
+      inner += `<input type="number" name="cur" value="${cur != null ? escapeHtml(cur) : ""}">`;
+    } else if (q.type === "date") {
+      inner += `<input type="date" name="cur" value="${cur != null ? escapeHtml(cur) : ""}">`;
+    }
+    inner += `</div>`;
+    box.innerHTML = inner;
+
+    const atEndPath = idx === path.length - 1;
+    // peek next without committing
+    $("#btn-prev").classList.toggle("hidden", idx === 0);
+    $("#btn-next").classList.toggle("hidden", false);
+    $("#btn-submit").classList.add("hidden");
+    // after answering we decide; for now Next always, Submit when next would be end
+  }
+
+  function commitAndAdvance(submitIfEnd) {
+    const q = qById(path[idx]);
+    const value = readCurrentValue(q);
+    const err = clientValidate(q, value);
+    if (err) { showMsg(msg, err, false); return; }
+    showMsg(msg, "", true);
+    answers[q.id] = value;
+    const nxt = resolveNext(q, value);
+    // truncate any forward path beyond current
+    path = path.slice(0, idx + 1);
+    if (nxt === "end") {
+      $("#btn-next").classList.add("hidden");
+      $("#btn-submit").classList.remove("hidden");
+      if (submitIfEnd) doSubmit();
+      return;
+    }
+    path.push(nxt);
+    idx += 1;
+    render();
+    // if somehow last
+    const q2 = qById(path[idx]);
+    // reveal submit only after choosing next that is end — handled above
+  }
+
+  async function doSubmit() {
+    // ensure current committed
+    const q = qById(path[idx]);
+    if (q) {
+      const value = readCurrentValue(q);
+      const err = clientValidate(q, value);
+      if (err) { showMsg(msg, err, false); return; }
+      answers[q.id] = value;
+      // final path for reachable set
+      path = path.slice(0, idx + 1);
+      const nxt = resolveNext(q, value);
+      if (nxt !== "end") {
+        // user pressed submit early? continue
+        path.push(nxt);
+        idx++;
+        render();
+        return;
+      }
+    }
+    const payload = {
+      answers: Object.keys(answers).map(qid => ({ question_id: qid, value: answers[qid] })),
+    };
+    try {
+      await api("POST", `/api/fill/${token}`, payload);
+      $("#qbox").innerHTML = "";
+      $("#btn-prev").classList.add("hidden");
+      $("#btn-next").classList.add("hidden");
+      $("#btn-submit").classList.add("hidden");
+      $("#progress").textContent = "";
+      showMsg(msg, "提交成功，感谢填写！", true);
+    } catch (e) {
+      const details = e.body && e.body.details;
+      showMsg(msg, details ? ("校验失败: " + JSON.stringify(details)) : (e.message || "提交失败"), false);
+    }
+  }
+
+  $("#btn-next").onclick = () => commitAndAdvance(false);
+  $("#btn-submit").onclick = () => doSubmit();
+  $("#btn-prev").onclick = () => {
+    if (idx === 0) return;
+    idx -= 1;
+    render();
+    $("#btn-next").classList.remove("hidden");
+    $("#btn-submit").classList.add("hidden");
+  };
+
+  // After next resolves to end, show submit: intercept by checking after render via mutation — simpler hook:
+  const _orig = commitAndAdvance;
+  // already handles
+
+  render();
+})();
+</script>
+{% endblock %}

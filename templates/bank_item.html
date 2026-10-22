@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}题目详情{% endblock %}
+{% block body %}
+<p><a href="/bank">← 题库</a></p>
+<div class="card">
+  <h1 id="title">…</h1>
+  <p class="muted" id="meta"></p>
+  <div class="row">
+    <input type="text" id="share-user" placeholder="分享给用户名" style="max-width:200px">
+    <button class="btn secondary" id="btn-share">分享</button>
+    <button class="btn secondary" id="btn-public">切换公开共享</button>
+  </div>
+  <div class="msg" id="msg"></div>
+</div>
+<div class="card">
+  <h2>版本历史</h2>
+  <ul class="list" id="versions"></ul>
+  <h2>基于最新版创建新版本</h2>
+  <label>新题干</label>
+  <input type="text" id="new-title">
+  <button class="btn" id="btn-fork" style="margin-top:8px;">生成新版本</button>
+</div>
+<div class="card">
+  <h2>被哪些问卷使用</h2>
+  <ul class="list" id="usage"></ul>
+</div>
+<div class="card">
+  <h2>跨问卷统计</h2>
+  <div id="stats">加载中…</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async () => {
+  if (!(await requireLogin())) return;
+  const itemId = location.pathname.split("/").pop();
+  const msg = $("#msg");
+
+  async function load() {
+    const data = await api("GET", `/api/bank/items/${itemId}`);
+    const it = data.item;
+    $("#title").textContent = it.title_hint || "题目";
+    $("#meta").textContent = `最新版本: ${it.head ? "v"+it.head.version : "-"} · 类型: ${it.head ? it.head.type : "-"} · 公开共享: ${it.is_public_share}`;
+    $("#new-title").value = it.head ? it.head.title : "";
+    const vl = $("#versions");
+    vl.innerHTML = "";
+    for (const v of data.versions) {
+      const li = document.createElement("li");
+      li.innerHTML = `<div><strong>v${v.version}</strong> ${escapeHtml(v.title)}
+        <div class="muted">${v.parent_version_id ? "来自版本 "+v.parent_version_id.slice(-4) : "初始版本"} · ${v.type}</div></div>
+        <span class="muted">${v.id.slice(-6)}</span>`;
+      vl.appendChild(li);
+    }
+    const ul = $("#usage");
+    ul.innerHTML = "";
+    if (!data.used_by_surveys.length) ul.innerHTML = '<li class="muted">暂无问卷引用</li>';
+    for (const u of data.used_by_surveys) {
+      const li = document.createElement("li");
+      li.innerHTML = `<div>${escapeHtml(u.survey_title)} <span class="badge ${u.survey_status}">${u.survey_status}</span></div>
+        <a class="btn secondary" href="/surveys/${u.survey_id}">打开问卷</a>`;
+      ul.appendChild(li);
+    }
+    try {
+      const st = await api("GET", `/api/bank/items/${itemId}/stats`);
+      let html = `<p class="muted">涉及问卷 ${st.survey_count} 份 · 作答 ${st.response_answer_count} 次</p>`;
+      if (st.distribution) {
+        html += st.distribution.map(d => `<div>${escapeHtml(d.label)}: ${d.count}</div>`).join("");
+      } else if (st.numeric) {
+        html += `<div>平均 ${st.numeric.avg ?? "-"} / 最小 ${st.numeric.min ?? "-"} / 最大 ${st.numeric.max ?? "-"}</div>`;
+      } else if (st.samples) {
+        html += "<ul>" + st.samples.map(s => `<li class="muted">${escapeHtml(s)}</li>`).join("") + "</ul>";
+      }
+      $("#stats").innerHTML = html;
+    } catch (e) {
+      $("#stats").textContent = e.message;
+    }
+  }
+  function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
+
+  $("#btn-share").onclick = async () => {
+    try {
+      await api("POST", `/api/bank/items/${itemId}/share`, { username: $("#share-user").value.trim() });
+      showMsg(msg, "已分享", true);
+      await load();
+    } catch (e) { showMsg(msg, e.message, false); }
+  };
+  $("#btn-public").onclick = async () => {
+    const data = await api("GET", `/api/bank/items/${itemId}`);
+    await api("POST", `/api/bank/items/${itemId}/share`, { is_public_share: !data.item.is_public_share });
+    await load();
+  };
+  $("#btn-fork").onclick = async () => {
+    try {
+      await api("POST", `/api/bank/items/${itemId}/versions`, { title: $("#new-title").value.trim() });
+      showMsg(msg, "已生成新版本", true);
+      await load();
+    } catch (e) { showMsg(msg, e.message, false); }
+  };
+  await load();
+})();
+</script>
+{% endblock %}

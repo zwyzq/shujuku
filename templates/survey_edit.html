@@ -1,0 +1,300 @@
+{% extends "base.html" %}
+{% block title %}编辑问卷{% endblock %}
+{% block body %}
+<p><a href="/">← 返回列表</a></p>
+<div class="card">
+  <div class="row" style="justify-content:space-between;">
+    <h1 id="title">编辑问卷</h1>
+    <span id="status"></span>
+  </div>
+  <label>标题</label>
+  <input type="text" id="s-title">
+  <label>说明</label>
+  <textarea id="s-desc"></textarea>
+  <div class="row" style="margin-top:8px;">
+    <label style="display:flex;align-items:center;gap:8px;margin:0;">
+      <input type="checkbox" id="s-anon" checked> 允许匿名填写（关闭则填写者必须登录）
+    </label>
+  </div>
+  <label>截止时间（可选，本地时间）</label>
+  <input type="datetime-local" id="s-deadline">
+  <div class="row" style="margin-top:12px;">
+    <button class="btn secondary" id="btn-save">保存信息</button>
+    <button class="btn" id="btn-publish">发布</button>
+    <button class="btn secondary" id="btn-close">关闭填写</button>
+    <button class="btn secondary" id="btn-reopen">重新开放</button>
+    <button class="btn danger" id="btn-del">删除</button>
+  </div>
+  <p class="muted" id="fill-link"></p>
+  <div class="msg" id="msg"></div>
+</div>
+
+<div class="card">
+  <h2>题目</h2>
+  <div class="row" style="margin-bottom:10px;">
+    <select id="bank-pick" style="flex:1"><option value="">从题库选用…</option></select>
+    <button class="btn secondary" id="btn-from-bank" type="button">加入本卷</button>
+  </div>
+  <div id="questions"></div>
+  <hr style="border:none;border-top:1px solid var(--border);margin:16px 0;">
+  <h2>添加题目</h2>
+  <label>题型</label>
+  <select id="q-type">
+    <option value="single">单选</option>
+    <option value="multiple">多选</option>
+    <option value="text">填空</option>
+    <option value="number">数字</option>
+    <option value="rating">评分</option>
+    <option value="date">日期</option>
+  </select>
+  <label>题干</label>
+  <input type="text" id="q-title" placeholder="请输入题目">
+  <label><input type="checkbox" id="q-required"> 必填</label>
+  <div id="opt-box">
+    <label>选项（每行一个，格式：值|显示文字，例如 yes|满意）</label>
+    <textarea id="q-options" placeholder="yes|满意&#10;no|不满意"></textarea>
+  </div>
+  <div id="val-box" class="hidden">
+    <label>最少字数</label>
+    <input type="number" id="q-minlen" placeholder="0">
+    <label>最大字数</label>
+    <input type="number" id="q-maxlen" placeholder="200">
+  </div>
+  <div id="num-box" class="hidden">
+    <label>最小值</label>
+    <input type="number" id="q-min" placeholder="0">
+    <label>最大值</label>
+    <input type="number" id="q-max" placeholder="120">
+    <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="q-int"> 必须是整数</label>
+  </div>
+  <div id="multi-box" class="hidden">
+    <label>至少选几个</label>
+    <input type="number" id="q-min-select" placeholder="例如 1">
+    <label>最多选几个</label>
+    <input type="number" id="q-max-select" placeholder="例如 3">
+  </div>
+  <div id="jump-box">
+    <label>跳转规则（可选，每行：选项值 -> 题目序号或 end）</label>
+    <textarea id="q-jumps" placeholder="yes -> 3&#10;no -> end"></textarea>
+    <p class="muted">题目序号按添加后的顺序（1 起）。保存本卷题目后，再根据序号解析。</p>
+  </div>
+  <div class="row" style="margin-top:12px;">
+    <button class="btn" id="btn-add-q">添加题目</button>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async () => {
+  const user = await requireLogin();
+  if (!user) return;
+  const sid = location.pathname.split("/")[2];
+  const msg = $("#msg");
+
+  const typeSel = $("#q-type");
+  function syncTypeUI() {
+    const t = typeSel.value;
+    const needOpt = ["single","multiple","rating"].includes(t);
+    $("#opt-box").classList.toggle("hidden", !needOpt);
+    $("#val-box").classList.toggle("hidden", t !== "text");
+    $("#num-box").classList.toggle("hidden", t !== "number");
+    $("#multi-box").classList.toggle("hidden", t !== "multiple");
+    if (t === "rating" && !$("#q-options").value.trim()) {
+      $("#q-options").value = "1|1分\n2|2分\n3|3分\n4|4分\n5|5分";
+    }
+  }
+  typeSel.onchange = syncTypeUI;
+  syncTypeUI();
+
+  function parseOptions(text) {
+    return text.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+      const i = l.indexOf("|");
+      if (i < 0) return { value: l, label: l };
+      return { value: l.slice(0, i).trim(), label: l.slice(i + 1).trim() };
+    });
+  }
+
+  async function load() {
+    const data = await api("GET", `/api/surveys/${sid}`);
+    const s = data.survey;
+    $("#title").textContent = s.title;
+    $("#s-title").value = s.title;
+    $("#s-desc").value = s.description || "";
+    $("#s-anon").checked = s.allow_anonymous !== false;
+    if (s.deadline) {
+      const d = new Date(s.deadline);
+      if (!isNaN(d)) {
+        const pad = n => String(n).padStart(2,"0");
+        $("#s-deadline").value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+    } else {
+      $("#s-deadline").value = "";
+    }
+    $("#status").innerHTML = statusBadge(s.status);
+    if (s.fill_url) {
+      const full = location.origin + s.fill_url;
+      const alt = s.survey_path ? (location.origin + s.survey_path) : "";
+      $("#fill-link").innerHTML = `填写链接：<a href="${s.fill_url}" target="_blank">${full}</a>` +
+        (alt ? `<br>兼容路径：<a href="${s.survey_path}" target="_blank">${alt}</a>` : "");
+    } else {
+      $("#fill-link").textContent = "发布后会生成填写链接。";
+    }
+    const box = $("#questions");
+    box.innerHTML = "";
+    if (!data.questions.length) {
+      box.innerHTML = '<p class="muted">还没有题目。</p>';
+    }
+    for (const q of data.questions) {
+      const div = document.createElement("div");
+      div.className = "q-item";
+      const opts = (q.options || []).map(o => o.label).join(" / ");
+      div.innerHTML = `
+        <div class="meta">#${q.order} · ${q.type}${q.required ? " · 必填" : ""}</div>
+        <div><strong>${escapeHtml(q.title)}</strong></div>
+        <div class="muted">${opts ? "选项: " + escapeHtml(opts) : ""}</div>
+        <div class="row" style="margin-top:8px;">
+          <button class="btn secondary btn-del-q" data-id="${q.id}">删除</button>
+        </div>`;
+      box.appendChild(div);
+    }
+    $$(".btn-del-q", box).forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm("删除这道题？")) return;
+        await api("DELETE", `/api/questions/${btn.dataset.id}`);
+        await load();
+      };
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+  }
+
+  $("#btn-save").onclick = async () => {
+    try {
+      const dl = $("#s-deadline").value;
+      await api("PATCH", `/api/surveys/${sid}`, {
+        title: $("#s-title").value.trim(),
+        description: $("#s-desc").value.trim(),
+        allow_anonymous: $("#s-anon").checked,
+        deadline: dl ? new Date(dl).toISOString() : null,
+      });
+      showMsg(msg, "已保存", true);
+      await load();
+    } catch (e) { showMsg(msg, e.message, false); }
+  };
+
+  $("#btn-publish").onclick = async () => {
+    try {
+      await api("POST", `/api/surveys/${sid}/publish`);
+      showMsg(msg, "已发布", true);
+      await load();
+    } catch (e) { showMsg(msg, e.message, false); }
+  };
+  $("#btn-close").onclick = async () => {
+    try {
+      await api("POST", `/api/surveys/${sid}/close`);
+      showMsg(msg, "已关闭", true);
+      await load();
+    } catch (e) { showMsg(msg, e.message, false); }
+  };
+  $("#btn-reopen").onclick = async () => {
+    try {
+      await api("POST", `/api/surveys/${sid}/reopen`);
+      showMsg(msg, "已重新开放", true);
+      await load();
+    } catch (e) { showMsg(msg, e.message, false); }
+  };
+  $("#btn-del").onclick = async () => {
+    if (!confirm("删除整份问卷及答卷？")) return;
+    await api("DELETE", `/api/surveys/${sid}`);
+    location.href = "/";
+  };
+
+  $("#btn-add-q").onclick = async () => {
+    const type = typeSel.value;
+    const title = $("#q-title").value.trim();
+    if (!title) { alert("请填写题干"); return; }
+    const payload = {
+      type,
+      title,
+      required: $("#q-required").checked,
+      validation: {},
+    };
+    if (["single","multiple","rating"].includes(type)) {
+      payload.options = parseOptions($("#q-options").value);
+      if (!payload.options.length) { alert("请填写选项"); return; }
+    }
+    if (type === "text") {
+      const mn = $("#q-minlen").value, ml = $("#q-maxlen").value;
+      if (mn) payload.validation.min_length = Number(mn);
+      if (ml) payload.validation.max_length = Number(ml);
+    }
+    if (type === "number") {
+      const mn = $("#q-min").value, mx = $("#q-max").value;
+      if (mn !== "") payload.validation.min = Number(mn);
+      if (mx !== "") payload.validation.max = Number(mx);
+      if ($("#q-int").checked) payload.validation.integer = true;
+    }
+    if (type === "multiple") {
+      const a = $("#q-min-select").value, b = $("#q-max-select").value;
+      if (a !== "") payload.validation.min_select = Number(a);
+      if (b !== "") payload.validation.max_select = Number(b);
+    }
+    // 跳转：先按「序号」暂存，添加后用当前题目列表解析为 id
+    const jumpLines = ($("#q-jumps").value || "").split("\n").map(x => x.trim()).filter(Boolean);
+    try {
+      const created = await api("POST", `/api/surveys/${sid}/questions`, payload);
+      if (jumpLines.length) {
+        const detail = await api("GET", `/api/surveys/${sid}`);
+        const byOrder = {};
+        for (const q of detail.questions) byOrder[q.order] = q.id;
+        const rules = [];
+        for (const line of jumpLines) {
+          const m = line.split(/->|→/).map(x => x.trim());
+          if (m.length < 2) continue;
+          const when = m[0];
+          const gotoRaw = m[1];
+          let goto = "end";
+          if (gotoRaw !== "end") {
+            const ord = Number(gotoRaw);
+            goto = byOrder[ord] || null;
+            if (!goto) { alert("跳转目标序号不存在: " + gotoRaw); continue; }
+          }
+          rules.push({ when_value: when, goto_question_id: goto });
+        }
+        if (rules.length) {
+          await api("PATCH", `/api/questions/${created.question.id}`, { jump_rules: rules });
+        }
+      }
+      $("#q-title").value = "";
+      $("#q-jumps").value = "";
+      await load();
+    } catch (e) { alert(e.message); }
+  };
+
+    // load bank options
+  try {
+    const bank = await api("GET", "/api/bank/items");
+    const sel = $("#bank-pick");
+    for (const it of bank.items) {
+      if (!it.head) continue;
+      const opt = document.createElement("option");
+      opt.value = it.head.id;
+      opt.textContent = `${it.title_hint} (v${it.head.version})`;
+      sel.appendChild(opt);
+    }
+  } catch (_) {}
+  $("#btn-from-bank").onclick = async () => {
+    const vid = $("#bank-pick").value;
+    if (!vid) { alert("请选择题库题目"); return; }
+    try {
+      await api("POST", `/api/surveys/${sid}/questions/from-bank`, { version_id: vid });
+      await load();
+    } catch (e) { alert(e.message); }
+  };
+
+  await load();
+})();
+</script>
+{% endblock %}

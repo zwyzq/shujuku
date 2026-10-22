@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}题库{% endblock %}
+{% block body %}
+<div class="row" style="justify-content:space-between;">
+  <div>
+    <h1>题库</h1>
+    <p class="muted">保存常用题、版本管理、分享给同学，组卷时选用。</p>
+  </div>
+  <a class="btn secondary" href="/">我的问卷</a>
+</div>
+<div class="card">
+  <h2>新建题库题</h2>
+  <label>题型</label>
+  <select id="type">
+    <option value="single">单选</option>
+    <option value="multiple">多选</option>
+    <option value="text">填空</option>
+    <option value="number">数字</option>
+  </select>
+  <label>题干</label>
+  <input type="text" id="title" placeholder="例如：你的年龄段">
+  <label>选项（单选/多选，每行 值|文字）</label>
+  <textarea id="options" placeholder="a|18岁以下&#10;b|18-25&#10;c|26以上"></textarea>
+  <div class="row" style="margin-top:12px;">
+    <button class="btn" id="btn-create">保存到题库</button>
+  </div>
+  <div class="msg" id="msg"></div>
+</div>
+<div class="card">
+  <h2>我的 / 共享给我的题目</h2>
+  <ul class="list" id="list"></ul>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async () => {
+  if (!(await requireLogin())) return;
+  const msg = $("#msg");
+
+  function parseOptions(text) {
+    return text.split("\n").map(l => l.trim()).filter(Boolean).map(l => {
+      const i = l.indexOf("|");
+      if (i < 0) return { value: l, label: l };
+      return { value: l.slice(0,i).trim(), label: l.slice(i+1).trim() };
+    });
+  }
+
+  async function refresh() {
+    const data = await api("GET", "/api/bank/items");
+    const list = $("#list");
+    list.innerHTML = "";
+    if (!data.items.length) {
+      list.innerHTML = '<li class="muted">题库还是空的</li>';
+      return;
+    }
+    for (const it of data.items) {
+      const li = document.createElement("li");
+      const ver = it.head ? `v${it.head.version}` : "";
+      li.innerHTML = `<div><strong>${escapeHtml(it.title_hint || "")}</strong>
+        <span class="badge">${ver}</span>
+        ${it.is_public_share ? '<span class="badge published">公开共享</span>' : ""}
+        <div class="muted">${it.head ? it.head.type : ""}</div></div>
+        <a class="btn secondary" href="/bank/${it.id}">管理</a>`;
+      list.appendChild(li);
+    }
+  }
+  function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));}
+
+  $("#btn-create").onclick = async () => {
+    const type = $("#type").value;
+    const title = $("#title").value.trim();
+    if (!title) return showMsg(msg, "请填写题干", false);
+    const payload = { type, title, required: false };
+    if (type === "single" || type === "multiple") {
+      payload.options = parseOptions($("#options").value);
+      if (!payload.options.length) return showMsg(msg, "请填写选项", false);
+    }
+    try {
+      await api("POST", "/api/bank/items", payload);
+      showMsg(msg, "已保存", true);
+      $("#title").value = "";
+      await refresh();
+    } catch (e) { showMsg(msg, e.message, false); }
+  };
+  await refresh();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}统计{% endblock %}
+{% block body %}
+<p><a id="back" href="#">← 返回编辑</a></p>
+<div class="card">
+  <h1 id="title">统计</h1>
+  <p class="muted" id="meta"></p>
+  <div id="body">加载中…</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(async () => {
+  const user = await requireLogin();
+  if (!user) return;
+  const sid = location.pathname.split("/")[2];
+  $("#back").href = "/surveys/" + sid;
+  try {
+    const s = await api("GET", `/api/surveys/${sid}/stats`);
+    $("#title").textContent = s.title + " · 统计";
+    $("#meta").textContent = `状态：${s.status} · 答卷数：${s.response_count}`;
+    const box = $("#body");
+    box.innerHTML = "";
+    for (const q of s.questions) {
+      const div = document.createElement("div");
+      div.className = "q-item";
+      let html = `<div class="meta">${q.type} · 作答 ${q.answered} · 跳过 ${q.skipped}</div>
+        <div><strong>${escapeHtml(q.title)}</strong></div>`;
+      if (q.distribution) {
+        const max = Math.max(1, ...q.distribution.map(d => d.count));
+        html += q.distribution.map(d => `
+          <div style="margin-top:8px;">
+            <div class="row" style="justify-content:space-between;">
+              <span>${escapeHtml(d.label)}</span>
+              <span class="muted">${d.count}</span>
+            </div>
+            <div class="bar"><span style="width:${(d.count/max)*100}%"></span></div>
+          </div>`).join("");
+      } else if (q.numeric) {
+        html += `<p class="muted">平均 ${q.numeric.avg ?? "-"} · 最小 ${q.numeric.min ?? "-"} · 最大 ${q.numeric.max ?? "-"}</p>`;
+      } else if (q.samples) {
+        html += `<ul>` + q.samples.map(x => `<li class="muted">${escapeHtml(x)}</li>`).join("") + `</ul>`;
+      }
+      div.innerHTML = html;
+      box.appendChild(div);
+    }
+    if (!s.questions.length) box.textContent = "暂无题目。";
+  } catch (e) {
+    $("#body").textContent = e.message;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+  }
+})();
+</script>
+{% endblock %}
